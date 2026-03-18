@@ -1,69 +1,92 @@
 import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image
 from docx import Document
 import os
 
 
 # ================= PDF EXTRACTION =================
 
-def extract_text_pymupdf(pdf_path):
-    text = ""
+def extract_pdf_structured(pdf_path):
+    """
+    Extract PDF as structured paragraphs (no OCR).
+    """
+    content = []
     doc = fitz.open(pdf_path)
 
     for page in doc:
-        text += page.get_text()
+        text = page.get_text()
 
-    return text.strip()
+        if text:
+            lines = text.split("\n")
 
+            for line in lines:
+                line = line.strip()
+                if line:
+                    content.append({
+                        "type": "paragraph",
+                        "text": line
+                    })
 
-def extract_text_ocr(pdf_path):
-    text = ""
-    doc = fitz.open(pdf_path)
-
-    for page in doc:
-        pix = page.get_pixmap(dpi=300)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        text += pytesseract.image_to_string(img)
-
-    return text.strip()
+    return content
 
 
 # ================= DOCX EXTRACTION =================
 
-def extract_text_docx(docx_path):
+def extract_docx_structured(docx_path):
+    """
+    Extract DOCX preserving paragraphs + tables.
+    """
     doc = Document(docx_path)
-    text = []
+    content = []
 
+    # -------- PARAGRAPHS --------
     for para in doc.paragraphs:
-        if para.text.strip():
-            text.append(para.text.strip())
+        text = para.text.strip()
+        if text:
+            content.append({
+                "type": "paragraph",
+                "text": text
+            })
 
-    return "\n".join(text)
+    # -------- TABLES --------
+    for table in doc.tables:
+        rows_data = []
+
+        for row in table.rows:
+            row_data = []
+            for cell in row.cells:
+                row_data.append(cell.text.strip())
+            rows_data.append(row_data)
+
+        content.append({
+            "type": "table",
+            "rows": rows_data
+        })
+
+    return content
 
 
 # ================= MAIN INGESTION =================
 
-def extract_text(file_path):
+def extract_content(file_path):
+    """
+    Main ingestion function used by pipeline.
+    Returns structured content (NOT raw text).
+    """
 
     file_name = os.path.basename(file_path)
     ext = file_name.lower().split(".")[-1]
 
     if ext == "pdf":
 
-        text = extract_text_pymupdf(file_path)
+        content = extract_pdf_structured(file_path)
 
-        # fallback to OCR
-        if len(text) < 200:
-            text = extract_text_ocr(file_path)
-            method = "ocr"
-        else:
-            method = "pymupdf"
+        method = "pdf_structured"
 
     elif ext == "docx":
 
-        text = extract_text_docx(file_path)
-        method = "docx"
+        content = extract_docx_structured(file_path)
+
+        method = "docx_structured"
 
     else:
         raise ValueError("Unsupported file type")
@@ -71,6 +94,6 @@ def extract_text(file_path):
     return {
         "file_name": file_name,
         "file_type": ext,
-        "raw_text": text,
+        "content": content,   # 🔥 IMPORTANT: structured, not raw_text
         "extraction_method": method
     }

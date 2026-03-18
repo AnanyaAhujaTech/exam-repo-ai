@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Query
-from vector_search import search, metadata
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from db import get_db
+from vector_search import search_ids
 
 router = APIRouter()
 
 
-# SEMANTIC SEARCH
+# SEMANTIC SEARCH (DB CONNECTED)
 @router.get("/search/questions")
 def semantic_search(
     query: str,
@@ -12,7 +14,8 @@ def semantic_search(
     semester: int = None,
     exam_type: str = None,
     department: str = None,
-    academic_year: str = None
+    academic_year: str = None,
+    db: Session = Depends(get_db)
 ):
 
     filters = {
@@ -23,20 +26,56 @@ def semantic_search(
         "academic_year": academic_year
     }
 
-    results = search(query, top_k=10, filters=filters)
+    vector_results = search_ids(query, top_k=10, filters=filters)
+
+    ids = [r["id"] for r in vector_results]
+
+    if not ids:
+        return {"results": []}
+
+    # Fetch from BOTH tables
+    questions = db.execute(
+        "SELECT * FROM questions WHERE q_id = ANY(:ids)",
+        {"ids": ids}
+    ).fetchall()
+
+    subparts = db.execute(
+        "SELECT * FROM subparts WHERE s_id = ANY(:ids)",
+        {"ids": ids}
+    ).fetchall()
+
+    # convert to dict
+    results = [dict(q) for q in questions] + [dict(s) for s in subparts]
 
     return {"results": results}
 
-
-# SIMILAR QUESTIONS
+# SIMILAR QUESTIONS (DB CONNECTED)
 @router.get("/similar/{q_id}")
-def similar_questions(q_id: str):
+def similar_questions(q_id: str, db: Session = Depends(get_db)):
 
-    original = next((m for m in metadata if m["id"] == q_id), None)
+    # get original text from DB
+    question = db.execute(
+        "SELECT question_text FROM questions WHERE q_id = :id",
+        {"id": q_id}
+    ).fetchone()
 
-    if not original:
+    if not question:
         return {"error": "Question not found"}
 
-    results = search(original["text"], top_k=10)
+    vector_results = search_ids(question[0], top_k=10)
 
-    return {"similar_questions": results}
+    ids = [r["id"] for r in vector_results]
+
+    questions = db.execute(
+        "SELECT * FROM questions WHERE q_id = ANY(:ids)",
+        {"ids": ids}
+    ).fetchall()
+
+    subparts = db.execute(
+        "SELECT * FROM subparts WHERE s_id = ANY(:ids)",
+        {"ids": ids}
+    ).fetchall()
+
+    return {
+        "similar_questions": [dict(q) for q in questions] + [dict(s) for s in subparts]
+    }

@@ -9,6 +9,7 @@ from ingestion import extract_content
 from regex_parser import parse_exam
 from ai_tagging import enrich_exam_json
 from db_inserter import insert_into_db
+from chroma_inserter import insert_into_chroma
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -103,9 +104,9 @@ def _run_pipeline(job_id, file_path, file_name):
         update_job(job_id, 80, "Saving to PostgreSQL database...")
         insert_into_db(enriched, file_path)  # Pass the JSON and the PDF file path
 
-        # -------- STEP 5: CHROMA INSERT (placeholder) --------
-        update_job(job_id, 90, "Indexing for search...")
-        # TODO: insert_into_chroma(enriched)
+        # -------- STEP 5: CHROMA INSERT --------
+     update_job(job_id, 90, "Indexing for semantic search...")
+     insert_into_chroma(enriched)
 
         # -------- COMPLETE --------
         complete_job(job_id, enriched.get("paper_id"), metrics)

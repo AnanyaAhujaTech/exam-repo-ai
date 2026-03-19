@@ -2,14 +2,37 @@ import re
 
 
 # =========================
-# HELPERS
+# SAFE MARKS EVALUATION
+# =========================
+
+def safe_eval_marks(expr):
+    expr = re.sub(r'\s+', '', expr.lower().replace('x', '*'))
+
+    if '=' in expr:
+        try:
+            return float(expr.split('=')[-1])
+        except:
+            return None
+
+    try:
+        if '*' in expr:
+            a, b = expr.split('*')
+            return float(a) * float(b)
+        elif '+' in expr:
+            return sum(float(x) for x in expr.split('+'))
+        elif expr.isdigit():
+            return float(expr)
+    except:
+        pass
+
+    return None
+
+
+# =========================
+# CONTENT → TEXT
 # =========================
 
 def content_to_text(content):
-    """
-    Convert structured content → text for regex parsing.
-    Tables are flattened carefully.
-    """
     lines = []
 
     for block in content:
@@ -81,19 +104,22 @@ def split_by_units(text):
     units = {None: []}
     current_unit = None
 
+    unit_pattern = re.compile(
+        r'^(?:UNIT|MODULE|SECTION|PART)[\s\-:]*([A-ZIVX\d]+)',
+        re.I
+    )
+
     for line in text.split("\n"):
 
         line = line.strip()
         if not line:
             continue
 
-        upper = line.upper()
+        match = unit_pattern.match(line)
 
-        if upper.startswith("UNIT"):
-            parts = upper.split()
-            if len(parts) >= 2:
-                current_unit = f"UNIT {parts[1]}"
-                units.setdefault(current_unit, [])
+        if match:
+            current_unit = f"UNIT {match.group(1).upper()}"
+            units.setdefault(current_unit, [])
             continue
 
         units.setdefault(current_unit, []).append(line)
@@ -109,6 +135,11 @@ def split_questions(units):
 
     questions = []
 
+    q_pattern = re.compile(
+        r'^(?:Q\.?\s*|Question\s*)?(\d{1,2})[\.\)]\s+(.*)',
+        re.I
+    )
+
     for unit, lines in units.items():
 
         current_qid = None
@@ -116,7 +147,9 @@ def split_questions(units):
 
         for line in lines:
 
-            if re.match(r'^Q\d+', line):
+            match = q_pattern.match(line)
+
+            if match:
 
                 if current_qid:
                     questions.append({
@@ -125,9 +158,9 @@ def split_questions(units):
                         "raw_text": " ".join(buffer).strip()
                     })
 
-                parts = line.split(maxsplit=1)
-                current_qid = parts[0]
-                buffer = [parts[1]] if len(parts) > 1 else []
+                # 🔥 FIXED: Q1 format
+                current_qid = f"Q{match.group(1)}"
+                buffer = [match.group(2)] if match.group(2) else []
 
             elif current_qid:
                 buffer.append(line)
@@ -143,6 +176,22 @@ def split_questions(units):
 
 
 # =========================
+# SUBPART NORMALIZATION
+# =========================
+
+ROMAN_MAP = {
+    "i": "a",
+    "ii": "b",
+    "iii": "c",
+    "iv": "d",
+    "v": "e",
+    "vi": "f",
+    "vii": "g",
+    "viii": "h"
+}
+
+
+# =========================
 # QUESTION PARSING
 # =========================
 
@@ -152,48 +201,51 @@ def parse_question(q):
     marks = None
 
     # -------- MARKS --------
-    for m in re.findall(r'\(([^)]*)\)', raw):
-        expr = m.replace(" ", "")
-        try:
-            if '=' in expr:
-                marks = float(expr.split('=')[-1])
-            elif '+' in expr or '*' in expr:
-                marks = float(eval(expr))
-            elif expr.isdigit():
-                marks = float(expr)
-            if marks:
-                break
-        except:
-            pass
+    for m in re.findall(r'[\(\[]([^)\]]*)[\)\]]', raw):
+        val = safe_eval_marks(m)
+        if val is not None:
+            marks = val
+            break
 
     # -------- SUBPARTS --------
     subparts = []
-    sub_match = re.search(r'(^|\s)([a-h])\)', raw)
 
-    if sub_match:
+    sub_pattern = re.compile(
+        r'(?:^|\s)\(?([a-h]|[ivx]{1,4})\)\s',
+        re.I
+    )
 
-        subs = list(re.finditer(
-            r'(^|\s)([a-h])\)\s*(.*?)(?=(\s[a-h]\)|$))',
-            raw,
-            re.S
-        ))
+    matches = list(sub_pattern.finditer(raw))
 
-        per = marks / len(subs) if marks else None
+    if matches:
 
-        for sp in subs:
-            text = re.sub(r'\([^)]*\)|CO\d+', '', sp.group(3))
-            text = re.sub(r'\s+', ' ', text).strip()
+        per_mark = round(marks / len(matches), 2) if marks else None
+
+        for i, match in enumerate(matches):
+
+            start = match.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+
+            chunk = raw[start:end]
+
+            clean = re.sub(r'[\(\[][^)\]]*[\)\]]|CO\d+', '', chunk)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+
+            raw_id = match.group(1).lower()
+
+            # 🔥 FIXED: Roman → alphabet
+            sub_id = ROMAN_MAP.get(raw_id, raw_id)
 
             subparts.append({
-                "subpart_id": sp.group(2),
-                "text": text,
-                "marks": per
+                "subpart_id": sub_id,
+                "text": clean,
+                "marks": per_mark
             })
 
         question_text = "Attempt all parts."
 
     else:
-        clean = re.sub(r'\([^)]*\)|CO\d+', '', raw)
+        clean = re.sub(r'[\(\[][^)\]]*[\)\]]|CO\d+', '', raw)
         question_text = re.sub(r'\s+', ' ', clean).strip()
 
     return {
@@ -206,14 +258,10 @@ def parse_question(q):
 
 
 # =========================
-# MAIN FUNCTION
+# MAIN ENTRY FUNCTION
 # =========================
 
 def parse_exam(extracted_data):
-    """
-    INPUT: ingestion output
-    OUTPUT: structured JSON (ready for AI tagging)
-    """
 
     content = extracted_data["content"]
 

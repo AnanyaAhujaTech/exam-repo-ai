@@ -31,8 +31,11 @@ def load_cache():
 
 
 def save_cache(cache):
-    with open(CACHE_FILE, "w") as f:
+    # ✅ FIXED: Atomic save to prevent cache corruption
+    temp_file = CACHE_FILE + ".tmp"
+    with open(temp_file, "w") as f:
         json.dump(cache, f, indent=2)
+    os.replace(temp_file, CACHE_FILE)
 
 
 # ===================== HELPERS =====================
@@ -49,17 +52,17 @@ def sha256_hash(text: str) -> str:
 
 
 def clean_json_output(raw_text: str) -> str:
-    text = raw_text.strip()
-
-    if text.startswith("```json"):
-        text = text[7:]
-    elif text.startswith("```"):
-        text = text[3:]
-
-    if text.endswith("```"):
-        text = text[:-3]
-
-    return text.strip()
+    """
+    Bulletproof JSON extractor. Finds the first '{' and the last '}' 
+    to ignore any conversational padding the LLM might generate.
+    """
+    start_idx = raw_text.find('{')
+    end_idx = raw_text.rfind('}')
+    
+    if start_idx != -1 and end_idx != -1:
+        return raw_text[start_idx:end_idx+1]
+        
+    return raw_text.strip()
 
 
 def is_valid_llm_output(data: dict) -> bool:
@@ -85,7 +88,7 @@ def ollama_generate_with_retry(prompt: str, max_retries: int = 3) -> Tuple[dict,
                     "stream": False,
                     "options": {"temperature": 0.1}
                 },
-                timeout=30  # ✅ FIXED shorter timeout
+                timeout=120  # Increased timeout for local LLM processing
             )
 
             response.raise_for_status()
@@ -107,8 +110,8 @@ def ollama_generate_with_retry(prompt: str, max_retries: int = 3) -> Tuple[dict,
             logging.warning(f"Attempt {attempt}: Invalid JSON. Retrying...")
             logging.debug(f"Raw Output: {raw_output}")
 
-        # ✅ FIXED: backoff
-        time.sleep(attempt)
+        # Exponential backoff
+        time.sleep(attempt * 2)
 
     logging.error("LLM failed after retries")
     return {}, total_latency
@@ -118,18 +121,19 @@ def ollama_generate_with_retry(prompt: str, max_retries: int = 3) -> Tuple[dict,
 
 def build_question_prompt(question_text: str) -> str:
     return f"""
-Extract:
-- 3–5 technical keywords
-- confidence per keyword
-- 1–3 syllabus topics
+Extract the following from the question:
+- 3 to 5 technical keywords
+- A confidence score (0.0 to 1.0) per keyword
+- 1 to 3 syllabus topics
 
-Return JSON only:
+You MUST return ONLY valid JSON. No conversational text.
 
+Expected JSON format:
 {{
   "question": {{
-    "tags": [],
-    "confidence": {{}},
-    "syllabus_topics": []
+    "tags": ["keyword1", "keyword2"],
+    "confidence": {{"keyword1": 0.9, "keyword2": 0.8}},
+    "syllabus_topics": ["topic 1"]
   }}
 }}
 
@@ -139,25 +143,28 @@ Question:
 
 
 def build_subpart_prompt(question_text: str, subparts: List[Dict]) -> str:
+    # Dynamically build the required JSON keys so the LLM doesn't hallucinate
+    example_subparts = {}
+    for sp in subparts:
+        example_subparts[sp['subpart_id']] = {
+            "tags": ["keyword1"],
+            "confidence": {"keyword1": 0.9},
+            "syllabus_topics": ["topic 1"]
+        }
 
     prompt = f"""
-Analyze subparts.
+Analyze the following subparts of a question. 
+You MUST return ONLY valid JSON. No conversational text.
 
-Return JSON:
-
+Expected JSON format:
 {{
-  "subparts": {{
-    "a": {{
-      "tags": [],
-      "confidence": {{}},
-      "syllabus_topics": []
-    }}
-  }}
+  "subparts": {json.dumps(example_subparts, indent=2)}
 }}
 
-Context:
+Context (Main Question):
 {question_text}
 
+Subparts to analyze:
 """
 
     for sp in subparts:
@@ -179,6 +186,11 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
     for question in enriched.get("questions", []):
 
         q_text = question.get("question_text", "")
+        
+        # ✅ FIXED: Prevent empty questions from hitting the LLM
+        if not q_text.strip():
+            continue
+            
         q_hash = sha256_hash(q_text)
 
         question["question_hash"] = q_hash
@@ -198,7 +210,6 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
 
             q_data = result_dict.get("question", {})
 
-            # ✅ FIXED: validation
             if not is_valid_llm_output(q_data):
                 logging.warning(f"Invalid LLM output for question: {q_text[:50]}...")
                 q_data = {}
@@ -221,6 +232,11 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
         for sp in subparts:
 
             sp_text = sp.get("text", "")
+            
+            # ✅ FIXED: Prevent empty subparts from hitting the LLM
+            if not sp_text.strip():
+                continue
+                
             sp_hash = sha256_hash(sp_text)
 
             sp["subquestion_hash"] = sp_hash
@@ -250,7 +266,6 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
 
                 data = sub_res.get(sp_id, {})
 
-                # ✅ FIXED: validation
                 if not is_valid_llm_output(data):
                     data = {}
 
@@ -267,7 +282,6 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
 
     save_cache(cache)
 
-    # ✅ FIXED: better metrics
     metrics = {
         "llm_calls": total_llm_calls,
         "total_time": round(total_llm_time, 3),

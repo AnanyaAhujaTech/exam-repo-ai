@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import text  # Required for raw SQL binding
 from db import get_db
 from chroma.search import search
 
 router = APIRouter()
 
-#SEMANTIC SEARCH
+# =========================
+# SEMANTIC SEARCH
+# =========================
 @router.get("/search/questions")
 def semantic_search(
     query: str,
@@ -17,33 +20,43 @@ def semantic_search(
     db: Session = Depends(get_db)
 ):
 
-    filters = {}
-
+    # 1. Build Chroma-compatible filter syntax
+    conditions = []
+    
     if subject_name:
-        filters["subject_name"] = subject_name
+        conditions.append({"subject_name": subject_name})
     if semester:
-        filters["semester"] = semester
+        conditions.append({"semester": semester})
     if exam_type:
-        filters["exam_type"] = exam_type
+        conditions.append({"exam_type": exam_type})
     if department:
-        filters["department"] = department
+        conditions.append({"department": department})
     if academic_year:
-        filters["academic_year"] = academic_year
+        conditions.append({"academic_year": academic_year})
 
-    chroma_results = search(query, filters=filters)
+    # Format for ChromaDB
+    chroma_filters = None
+    if len(conditions) == 1:
+        chroma_filters = conditions[0]
+    elif len(conditions) > 1:
+        chroma_filters = {"$and": conditions}
 
-    ids = chroma_results["ids"][0] if chroma_results["ids"] else []
+    # 2. Search Chroma for the IDs
+    chroma_results = search(query, filters=chroma_filters)
+
+    ids = chroma_results["ids"][0] if chroma_results and chroma_results["ids"] else []
 
     if not ids:
         return {"results": []}
 
+    # 3. Fetch full records from PostgreSQL
     questions = db.execute(
-        "SELECT * FROM questions WHERE q_id = ANY(:ids)",
+        text("SELECT * FROM questions WHERE q_id = ANY(:ids)"),
         {"ids": ids}
     ).fetchall()
 
     subparts = db.execute(
-        "SELECT * FROM subparts WHERE s_id = ANY(:ids)",
+        text("SELECT * FROM subparts WHERE s_id = ANY(:ids)"),
         {"ids": ids}
     ).fetchall()
 
@@ -51,29 +64,38 @@ def semantic_search(
         "results": [dict(q) for q in questions] + [dict(s) for s in subparts]
     }
 
-#SIMILAR QUES
+
+# =========================
+# SIMILAR QUESTIONS
+# =========================
 @router.get("/similar/{q_id}")
 def similar_questions(q_id: str, db: Session = Depends(get_db)):
 
+    # 1. Look up the original question text
     question = db.execute(
-        "SELECT question_text FROM questions WHERE q_id = :id",
+        text("SELECT question_text FROM questions WHERE q_id = :id"),
         {"id": q_id}
     ).fetchone()
 
     if not question:
-        return {"error": "Not found"}
+        return {"error": "Question not found"}
 
+    # 2. Use the text to query Chroma
     chroma_results = search(question[0])
+    
+    ids = chroma_results["ids"][0] if chroma_results and chroma_results["ids"] else []
+    
+    if not ids:
+        return {"similar_questions": []}
 
-    ids = chroma_results["ids"][0]
-
+    # 3. Fetch the similar full records from PostgreSQL
     questions = db.execute(
-        "SELECT * FROM questions WHERE q_id = ANY(:ids)",
-        {"ids": ids}
+        text("SELECT * FROM questions WHERE q_id = ANY(:ids) AND q_id != :original_id"),
+        {"ids": ids, "original_id": q_id} # Filter out the exact question they searched with
     ).fetchall()
 
     subparts = db.execute(
-        "SELECT * FROM subparts WHERE s_id = ANY(:ids)",
+        text("SELECT * FROM subparts WHERE s_id = ANY(:ids)"),
         {"ids": ids}
     ).fetchall()
 

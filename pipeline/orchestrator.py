@@ -8,6 +8,7 @@ import threading
 from ingestion import extract_content
 from regex_parser import parse_exam
 from ai_tagging import enrich_exam_json
+from db_inserter import insert_into_db
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -98,9 +99,9 @@ def _run_pipeline(job_id, file_path, file_name):
         update_job(job_id, 60, "Running AI tagging...")
         enriched, metrics = enrich_exam_json(parsed)
 
-        # -------- STEP 4: DB INSERT (placeholder) --------
-        update_job(job_id, 80, "Saving to database...")
-        # TODO: insert_into_db(enriched)
+        # -------- STEP 4: DB INSERT --------
+        update_job(job_id, 80, "Saving to PostgreSQL database...")
+        insert_into_db(enriched, file_path)  # Pass the JSON and the PDF file path
 
         # -------- STEP 5: CHROMA INSERT (placeholder) --------
         update_job(job_id, 90, "Indexing for search...")

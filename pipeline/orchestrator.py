@@ -2,9 +2,9 @@ import uuid
 import os
 import time
 
-from pipeline.ingestion import extract_content
-from pipeline.regex_parser import parse_exam
-from pipeline.ai_tagging import enrich_exam_json
+from ingestion import extract_content
+from regex_parser import parse_exam
+from ai_tagging import enrich_exam_json
 
 
 # =========================

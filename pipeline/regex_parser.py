@@ -82,6 +82,11 @@ def extract_metadata(text):
     if program_match:
         metadata["program"] = program_match.group(1).strip()
 
+    # ✅ ADDED: Department extraction
+    dept_match = re.search(r'Department\s?:\s?(.+)', text, re.I)
+    if dept_match:
+        metadata["department"] = dept_match.group(1).strip()
+
     sem_match = re.search(r'Semester\s?:\s?<?(\d)>?', text, re.I)
     if sem_match:
         metadata["semester"] = int(sem_match.group(1))
@@ -148,8 +153,9 @@ def split_questions(units):
 
     questions = []
 
+    # ✅ FIXED: Relaxed question pattern
     q_pattern = re.compile(
-        r'^(?:Q\.?\s*|Question\s*)?(\d{1,2})[\.\)]\s+(.*)',
+        r'^(?:Q\.?\s*|Question\s*)?(\d{1,2})[\.\)]?\s+(.*)',
         re.I
     )
 
@@ -171,7 +177,6 @@ def split_questions(units):
                         "raw_text": " ".join(buffer).strip()
                     })
 
-                # 🔥 FIXED: Q1 format
                 current_qid = f"Q{match.group(1)}"
                 buffer = [match.group(2)] if match.group(2) else []
 
@@ -246,7 +251,6 @@ def parse_question(q):
 
             raw_id = match.group(1).lower()
 
-            # 🔥 FIXED: Roman → alphabet
             sub_id = ROMAN_MAP.get(raw_id, raw_id)
 
             subparts.append({

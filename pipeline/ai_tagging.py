@@ -5,8 +5,8 @@ import re
 import os
 import time
 import copy
+import logging
 from typing import List, Dict, Tuple
-
 
 # ========================= CONFIG =========================
 
@@ -18,8 +18,10 @@ os.makedirs("cache", exist_ok=True)
 
 MAX_SUBPARTS_PER_BATCH = 4
 
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-# ======================= CACHING LAYER =====================
+
+# ======================= CACHE =======================
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -46,31 +48,70 @@ def sha256_hash(text: str) -> str:
     return hashlib.sha256(normalize_text(text).encode()).hexdigest()
 
 
-# ======================= OLLAMA =======================
+def clean_json_output(raw_text: str) -> str:
+    text = raw_text.strip()
 
-def ollama_generate(prompt: str) -> Tuple[str, float]:
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
 
-    start = time.time()
+    if text.endswith("```"):
+        text = text[:-3]
 
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "prompt": prompt,
-                "stream": False
-            },
-            timeout=60
-        )
+    return text.strip()
 
-        response.raise_for_status()
 
-        latency = time.time() - start
+def is_valid_llm_output(data: dict) -> bool:
+    return bool(data.get("tags") or data.get("syllabus_topics"))
 
-        return response.json().get("response", "").strip(), latency
 
-    except Exception as e:
-        return "", 0.0
+# ======================= LLM CALL =======================
+
+def ollama_generate_with_retry(prompt: str, max_retries: int = 3) -> Tuple[dict, float]:
+
+    total_latency = 0.0
+
+    for attempt in range(1, max_retries + 1):
+
+        start = time.time()
+
+        try:
+            response = requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.1}
+                },
+                timeout=30  # ✅ FIXED shorter timeout
+            )
+
+            response.raise_for_status()
+
+            latency = time.time() - start
+            total_latency += latency
+
+            raw_output = response.json().get("response", "")
+            cleaned = clean_json_output(raw_output)
+
+            parsed = json.loads(cleaned)
+
+            return parsed, total_latency
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Attempt {attempt}: Network error: {e}")
+
+        except json.JSONDecodeError as e:
+            logging.warning(f"Attempt {attempt}: Invalid JSON. Retrying...")
+            logging.debug(f"Raw Output: {raw_output}")
+
+        # ✅ FIXED: backoff
+        time.sleep(attempt)
+
+    logging.error("LLM failed after retries")
+    return {}, total_latency
 
 
 # ================== PROMPTS ==================
@@ -130,8 +171,7 @@ Context:
 def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
 
     cache = load_cache()
-
-    enriched = copy.deepcopy(exam_json)  # 🔥 FIXED
+    enriched = copy.deepcopy(exam_json)
 
     total_llm_calls = 0
     total_llm_time = 0.0
@@ -142,25 +182,25 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
         q_hash = sha256_hash(q_text)
 
         question["question_hash"] = q_hash
-
         subparts = question.get("subparts", [])
 
         # -------- QUESTION --------
-
         if q_hash in cache:
             question.update(cache[q_hash])
 
         else:
             prompt = build_question_prompt(q_text)
-            raw_output, latency = ollama_generate(prompt)
+
+            result_dict, latency = ollama_generate_with_retry(prompt)
 
             total_llm_calls += 1
             total_llm_time += latency
 
-            try:
-                result = json.loads(raw_output)
-                q_data = result.get("question", {})
-            except:
+            q_data = result_dict.get("question", {})
+
+            # ✅ FIXED: validation
+            if not is_valid_llm_output(q_data):
+                logging.warning(f"Invalid LLM output for question: {q_text[:50]}...")
                 q_data = {}
 
             meta = {
@@ -170,7 +210,9 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
             }
 
             question.update(meta)
-            cache[q_hash] = meta
+
+            if meta["ai_tags"] or meta["syllabus_topics"]:
+                cache[q_hash] = meta
 
         # -------- SUBPARTS --------
 
@@ -193,16 +235,13 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
             batch = uncached[i:i + MAX_SUBPARTS_PER_BATCH]
 
             prompt = build_subpart_prompt(q_text, batch)
-            raw_output, latency = ollama_generate(prompt)
+
+            result_dict, latency = ollama_generate_with_retry(prompt)
 
             total_llm_calls += 1
             total_llm_time += latency
 
-            try:
-                result = json.loads(raw_output)
-                sub_res = result.get("subparts", {})
-            except:
-                sub_res = {}
+            sub_res = result_dict.get("subparts", {})
 
             for sp in batch:
 
@@ -211,6 +250,10 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
 
                 data = sub_res.get(sp_id, {})
 
+                # ✅ FIXED: validation
+                if not is_valid_llm_output(data):
+                    data = {}
+
                 meta = {
                     "ai_tags": data.get("tags", []),
                     "ai_confidence": data.get("confidence", {}),
@@ -218,13 +261,17 @@ def enrich_exam_json(exam_json: dict) -> Tuple[dict, dict]:
                 }
 
                 sp.update(meta)
-                cache[sp_hash] = meta
+
+                if meta["ai_tags"] or meta["syllabus_topics"]:
+                    cache[sp_hash] = meta
 
     save_cache(cache)
 
+    # ✅ FIXED: better metrics
     metrics = {
         "llm_calls": total_llm_calls,
-        "total_time": round(total_llm_time, 3)
+        "total_time": round(total_llm_time, 3),
+        "avg_latency": round(total_llm_time / total_llm_calls, 3) if total_llm_calls else 0
     }
 
     return enriched, metrics

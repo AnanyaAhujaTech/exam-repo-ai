@@ -1,6 +1,5 @@
 import re
 
-
 # =========================
 # SAFE MARKS EVALUATION
 # =========================
@@ -11,7 +10,7 @@ def safe_eval_marks(expr):
     if '=' in expr:
         try:
             return float(expr.split('=')[-1])
-        except:
+        except Exception:
             return None
 
     try:
@@ -22,7 +21,7 @@ def safe_eval_marks(expr):
             return sum(float(x) for x in expr.split('+'))
         elif expr.isdigit():
             return float(expr)
-    except:
+    except Exception:
         pass
 
     return None
@@ -41,10 +40,24 @@ def content_to_text(content):
             lines.append(block["text"])
 
         elif block["type"] == "table":
-            for row in block["rows"]:
-                row_text = " | ".join(cell for cell in row if cell)
-                if row_text.strip():
-                    lines.append(row_text)
+            rows = block["rows"]
+            if not rows:
+                continue
+            
+            # Extract header row
+            header = " | ".join(str(cell).strip() if cell else " " for cell in rows[0])
+            lines.append(f"| {header} |")
+            
+            # Create Markdown separator row (e.g., |---|---|)
+            separator = " | ".join("---" for _ in rows[0])
+            lines.append(f"| {separator} |")
+            
+            # Extract data rows
+            for row in rows[1:]:
+                row_text = " | ".join(str(cell).strip() if cell else " " for cell in row)
+                lines.append(f"| {row_text} |")
+            
+            lines.append("") # Add a blank line after the table for spacing
 
     return "\n".join(lines)
 
@@ -269,20 +282,18 @@ def parse_exam(extracted_data):
 
     metadata = extract_metadata(text)
 
-    if "subject_code" not in metadata:
-        raise ValueError("Missing subject_code")
-
+    # Fallbacks for critical metadata to prevent pipeline crashes
+    subj = metadata.get("subject_code", "UNKNOWN_SUBJ")
+    
     year_match = re.search(r'(20\d{2})', text)
-    if not year_match:
-        raise ValueError("Missing year")
+    if year_match:
+        year_val = str(int(year_match.group(1)) + 1)
+    else:
+        year_val = "UNKNOWN_YEAR"
+        
+    exam_type = metadata.get("exam_type", "UNKNOWN_EXAM").upper()
 
-    paper_id = (
-        metadata["subject_code"]
-        + "_"
-        + str(int(year_match.group(1)) + 1)
-        + "_"
-        + metadata.get("exam_type", "UNKNOWN").upper()
-    )
+    paper_id = f"{subj}_{year_val}_{exam_type}"
 
     units = split_by_units(text)
     raw_questions = split_questions(units)

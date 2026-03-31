@@ -10,7 +10,7 @@ from typing import List, Dict, Tuple
 
 # ========================= CONFIG =========================
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_URL = "http://ollama:11434/api/generate"
 MODEL = "mistral"
 
 CACHE_FILE = "cache/ai_cache.json"

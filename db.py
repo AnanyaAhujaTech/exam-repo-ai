@@ -1,11 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# The connection string format is:
-# postgresql://username:password@host:port/database_name
-
-# Replace 'YOUR_PASSWORD' with the password you made during installation!
-DATABASE_URL = "postgresql://postgres:YOUR_PASSWORD@localhost:5432/library_exam_db"
+DATABASE_URL = "postgresql://neondb_owner:npg_9v1ueBkcryaF@ep-sweet-feather-an4wylqv-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require"
 
 # Create the engine
 engine = create_engine(DATABASE_URL)

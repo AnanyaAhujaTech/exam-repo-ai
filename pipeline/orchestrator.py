@@ -4,6 +4,7 @@ import time
 import logging
 import traceback
 import threading
+import shutil  # Required for moving the file
 
 from ingestion import extract_content
 from regex_parser import parse_exam
@@ -96,17 +97,40 @@ def _run_pipeline(job_id, file_path, file_name):
         update_job(job_id, 30, "Parsing exam structure...")
         parsed = parse_exam(extracted)
 
+        # -------- STEP 2.5: FILE ROUTING --------
+        update_job(job_id, 40, "Organizing file into Archive...")
+        
+        # Get the subject code from the parsed metadata (default to UNKNOWN_SUBJ if missing)
+        meta = parsed.get("paper_metadata", {})
+        subj_code = meta.get("subject_code")
+        if not subj_code:
+            subj_code = "UNKNOWN_SUBJ"
+            
+        # Create the Archive directory and the specific Subject folder
+        archive_dir = "Archive"
+        subject_folder = os.path.join(archive_dir, subj_code)
+        os.makedirs(subject_folder, exist_ok=True)
+        
+        # Define the permanent new path for the file
+        new_file_path = os.path.join(subject_folder, file_name)
+        
+        # Move the file from the Inbox to the Subject folder
+        shutil.move(file_path, new_file_path)
+        
+        # OVERWRITE the file_path variable so the DB saves the permanent location
+        file_path = new_file_path 
+
         # -------- STEP 3: AI TAGGING --------
         update_job(job_id, 60, "Running AI tagging...")
         enriched, metrics = enrich_exam_json(parsed)
 
         # -------- STEP 4: DB INSERT --------
         update_job(job_id, 80, "Saving to PostgreSQL database...")
-        insert_into_db(enriched, file_path)  # Pass the JSON and the PDF file path
+        insert_into_db(enriched, file_path)  # Pass the JSON and the newly moved PDF file path
 
         # -------- STEP 5: CHROMA INSERT --------
-     update_job(job_id, 90, "Indexing for semantic search...")
-     insert_into_chroma(enriched)
+        update_job(job_id, 90, "Indexing for semantic search...")
+        insert_into_chroma(enriched)
 
         # -------- COMPLETE --------
         complete_job(job_id, enriched.get("paper_id"), metrics)

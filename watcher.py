@@ -21,7 +21,7 @@ class ExamDropHandler(FileSystemEventHandler):
             # before our pipeline tries to open and read it.
             time.sleep(2) 
             
-            print(f"📥 New file detected in Inbox: {event.src_path}")
+            print(f"New file detected in Inbox: {event.src_path}")
             # Trigger the background pipeline!
             process_exam_async(event.src_path)
 
@@ -34,5 +34,5 @@ def start_watcher():
     observer.schedule(event_handler, INBOX_DIR, recursive=False)
     observer.start()
     
-    print(f"👀 Watchdog started. Listening for new files in './{INBOX_DIR}'...")
+    print(f"Watchdog started. Listening for new files in './{INBOX_DIR}'...")
     return observer
